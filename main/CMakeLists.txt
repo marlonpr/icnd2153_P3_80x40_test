@@ -6,4 +6,7 @@ idf_component_register(
     PRIV_REQUIRES esp_lcd 
     esp_timer
     esp_mm
+    esp_hw_support
+    esp_driver_gpio
+    esp_driver_dma
 )
