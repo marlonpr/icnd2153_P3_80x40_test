@@ -1,0 +1,77 @@
+# -----------------------------------------------------------------------------
+# ESP-IDF build system
+# -----------------------------------------------------------------------------
+/build/                      # Compiled output (object files, binaries, etc.)
+/CMakeCache.txt
+/CMakeFiles/
+/cmake_install.cmake
+/idf-env.json
+idf.py
+
+/managed_components/
+
+# -----------------------------------------------------------------------------
+# Espressif tools & dependencies
+# -----------------------------------------------------------------------------
+/espressif/                  # IDF tools (toolchains, Python env, etc.)
+/dist/
+*.elf
+*.bin
+*.map
+*.tmp
+
+# -----------------------------------------------------------------------------
+# SDK configuration
+# -----------------------------------------------------------------------------
+sdkconfig.old
+sdkconfig.defaults
+!sdkconfig.defaults
+sdkconfig.defaults.old
+
+# -----------------------------------------------------------------------------
+# Python environments & caches
+# -----------------------------------------------------------------------------
+.venv/
+venv/
+.env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# -----------------------------------------------------------------------------
+# Eclipse workspace data (safe to ignore, but keep project files)
+# -----------------------------------------------------------------------------
+.metadata/
+.localhistory/
+.externalToolBuilders/
+target/
+Release/
+Debug/
+.settings/language.settings.xml    # auto-generated per user
+.settings/org.eclipse.cdt.core.prefs # optional to ignore if user-specific
+
+# -----------------------------------------------------------------------------
+# OS and editor junk files
+# -----------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# -----------------------------------------------------------------------------
+# Backup and temporary files
+# -----------------------------------------------------------------------------
+*~
+*.bak
+*.tmp
+*.swp
+*.swo
+
+# -----------------------------------------------------------------------------
+# Optional: ignore other IDE files (if using multiple environments)
+# -----------------------------------------------------------------------------
+.vscode/
+.idea/
+cmake-build-*/
+
+/build/
