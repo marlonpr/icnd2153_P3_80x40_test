@@ -37,10 +37,24 @@
  * main.c. A/B/C are already set to the values shown in your successful log.
  */
 
+ 
+ #if !defined(CONFIG_SPIRAM) || !CONFIG_SPIRAM
+ #error "This GPIO configuration requires PSRAM to be enabled."
+ #endif
+
+ #if !defined(CONFIG_SPIRAM_MODE_OCT) || !CONFIG_SPIRAM_MODE_OCT
+ #error "ESP32-S3R8 requires octal PSRAM mode."
+ #endif
+ 
+ 
+ 
+ 
+ 
 /* -------------------------------------------------------------------------- */
 /* GPIO MAP: COPY FROM THE WORKING BIT-BANGED TEST                            */
 /* -------------------------------------------------------------------------- */
 
+/*
 #define PIN_R1          GPIO_NUM_33
 #define PIN_G1          GPIO_NUM_34
 #define PIN_B1          GPIO_NUM_35
@@ -52,13 +66,34 @@
 #define PIN_ROW_B       GPIO_NUM_2   // held low
 #define PIN_ROW_C       GPIO_NUM_15  // confirmed: HX6158H serial data
 
-/*
- * Verify these three against your working main.c.
- * These defaults are only a likely ESP32-S3 ETH mapping.
- */
+
 #define PIN_LE          GPIO_NUM_16  // ICND2153 LE / HUB75 LAT
 #define PIN_GCLK        GPIO_NUM_21  // ICND2153 GCLK / HUB75 OE
 #define PIN_DCLK        GPIO_NUM_47  // ICND2153 DCLK / HUB75 CLK
+*/
+
+// RGB lanes — PSRAM-safe
+#define PIN_R1      GPIO_NUM_17
+#define PIN_G1      GPIO_NUM_18
+#define PIN_B1      GPIO_NUM_39
+
+#define PIN_R2      GPIO_NUM_40
+#define PIN_G2      GPIO_NUM_41
+#define PIN_B2      GPIO_NUM_38
+
+// HX6158H serial row driver
+#define PIN_ROW_A   GPIO_NUM_1    // row clock
+#define PIN_ROW_B   GPIO_NUM_2    // held low
+#define PIN_ROW_C   GPIO_NUM_15   // serial row data
+
+// ICND2153
+#define PIN_LE      GPIO_NUM_16
+#define PIN_GCLK    GPIO_NUM_42
+#define PIN_DCLK    GPIO_NUM_47
+
+
+
+
 
 /*
  * LCD_CAM requires a WR/PCLK output even though the panel must not receive it.
@@ -1062,6 +1097,71 @@ static void pattern_task(void *)
     }
 }
 
+
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+
+#include "esp_cache.h"
+
+
+static void verify_psram()
+{
+    const size_t total =
+        heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+
+    const size_t free =
+        heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+
+    const size_t largest =
+        heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+
+    ESP_LOGI(
+        TAG,
+        "PSRAM total=%u free=%u largest=%u bytes",
+        static_cast<unsigned>(total),
+        static_cast<unsigned>(free),
+        static_cast<unsigned>(largest));
+
+    if (total < 7U * 1024U * 1024U) {
+        ESP_LOGE(
+            TAG,
+            "Expected approximately 8 MB of PSRAM");
+
+        abort();
+    }
+
+    /*
+     * Temporary allocation test only.
+     * The existing I80 stream still uses internal DMA row buffers.
+     */
+    constexpr size_t TEST_ALLOCATION_BYTES = 283640U;
+
+    void *test_buffer =
+        heap_caps_aligned_alloc(
+            64,
+            TEST_ALLOCATION_BYTES,
+            MALLOC_CAP_SPIRAM |
+            MALLOC_CAP_DMA |
+            MALLOC_CAP_8BIT);
+
+    if (test_buffer == nullptr) {
+        ESP_LOGE(
+            TAG,
+            "Could not allocate a %u-byte DMA-capable PSRAM block",
+            static_cast<unsigned>(TEST_ALLOCATION_BYTES));
+
+        abort();
+    }
+
+    ESP_LOGI(
+        TAG,
+        "DMA-capable PSRAM test allocation succeeded: %p, %u bytes",
+        test_buffer,
+        static_cast<unsigned>(TEST_ALLOCATION_BYTES));
+
+    heap_caps_free(test_buffer);
+}
+
 /* -------------------------------------------------------------------------- */
 /* APPLICATION ENTRY                                                         */
 /* -------------------------------------------------------------------------- */
@@ -1070,7 +1170,7 @@ extern "C" void app_main(void)
 {
     ESP_LOGI(
         TAG,
-        "ESP32-S3 LCD_CAM/GDMA test: ICND2153 + HX6158H");
+        "ESP32-S3 LCD_CAM/GDMA test: ICND2153 + HX6158H");		
 
     ESP_LOGI(
         TAG,
@@ -1086,6 +1186,10 @@ extern "C" void app_main(void)
         static_cast<int>(PIN_ROW_A),
         static_cast<int>(PIN_ROW_C),
         static_cast<int>(PIN_ROW_B));
+		
+		
+	verify_psram();
+
 
     memset(s_fb, 0, sizeof(s_fb));
 
