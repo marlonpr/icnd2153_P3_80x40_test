@@ -21,8 +21,8 @@
  *     GPIO4-7 (TF card), GPIO8 and GPIO48 are returned to the board.
  *   - VERIFIED PANEL CONFIG: REG1 0x1370 (= (scan_rows-1)<<8 | 0x70),
  *     REG2 0xFFFF, REG3 0x40FC, REG4 0x0000, DEBUG 0x0000, GCLK/slot
- *     138 (prefix 58), max drive 0.85, gamma 2.2, OE enabled on GCLK
- *     only. Every one of these was established on hardware; none is
+ *     138 (prefix 58), max drive 1.00 test, gamma 2.2, OE enabled on
+ *     GCLK only. Every one of these was established on hardware; none is
  *     inherited unverified from the demo source.
  *   - ROW OE DISCIPLINE (proven): rows are enabled only during the 138
  *     GCLK pulses per slot; blanked through vsync, HX advances, pixel
@@ -46,6 +46,7 @@
  *     PRIV_REQUIRES esp_hw_support esp_driver_dma esp_mm esp_driver_gpio
  *                   esp_timer)
  *
+ * Test build: REG3 bit-2 (0x40F8/0x40FC) x HX-prefix-phase sweep.
  * Wiring: identical to the working Step 1 log. No jumper changes.
  * ========================================================================== */
 
@@ -138,10 +139,10 @@ static constexpr uint16_t ICND_REG2 = 0xFFFF;
 /*
  * REG3 low nibble: bits 2-3 set (0b1100), NOT bits 0-1 (0b0011) as in
  * every demo-derived value. PROVEN by A/B at identical drive: 0x40F3 at
- * drive 0.45 still shows a green lower ghost; 0x40FC at 0.45 is clean in
- * both colours, and 0x40FC remains clean all the way to 0.85 with a
- * moving full-scale dot. The lower-ghost threshold moved from 0.60
- * (0x40F3) to somewhere above 0.85 (0x40FC).
+ * drive 0.45 still shows a green lower ghost; 0x40FC strongly
+ * suppresses it. At both drive 0.85 and 1.00, only a very faint green
+ * residual remains and its brightness is visually unchanged. This test
+ * isolates whether post-row OE settling can remove that last residual.
  */
 static constexpr uint16_t ICND_REG3 = 0x40FC;
 static constexpr uint16_t ICND_REG4 = 0x0000;
@@ -221,23 +222,23 @@ static uint16_t s_oe_settle = 0;
 /*
  * GHOST TUNING MODE
  *
- * 1 = the pattern task becomes a sweep harness: the bouncing dot runs
- * forever while sweep steps are applied live every ~12 s (transport
- * stopped, rings rebuilt from the canvas, bit-banged init re-run,
- * verified restart). The dot cycles red/green/blue/cyan per step.
- * 0 = normal pattern cycle.
+ * 1 = run the automatic static-dot REG3-bit-2 / HX-phase sweep. Every step
+ * stops transport, rebuilds both rings, re-runs the ICND/HX protocol, verifies
+ * the restart, and holds the candidate for 10 seconds.
+ * 0 = normal application pattern cycle.
  */
-#define GHOST_TUNE_MODE 0
+#define GHOST_TUNE_MODE 1
 
 /*
- * PROBE MODE (within tune mode): instead of sweeping, apply the baseline
- * config once, draw a STATIC dot, and hold forever — a stable target for
- * oscilloscope work. The vsync words also drive LCD lane D12, routed to
- * FRAME_SYNC_GPIO: an ~800 ns pulse at every upload start to trigger on.
- * With the dot at (PROBE_DOT_X, PROBE_DOT_Y): its physical row is
- * selected during slots ≡ y (mod 20); slot ≈ 44.3 µs, so visits recur
- * every ~886 µs, 16 per 14.18 ms frame, the first ~y*44.3 µs after the
- * sync pulse. Set to 0 to run the sweep harness instead.
+ * Legacy focused OE-settle test selector. It is disabled here because this
+ * build uses GHOST_TUNE_MODE=1 for the REG3-bit-2 / HX-phase sweep.
+ */
+#define OE_SETTLE_TEST_MODE 0
+
+/*
+ * PROBE MODE (within tune mode): use a stationary full-scale GREEN 2x2 dot
+ * while the automatic REG3-bit-2 / HX-phase sweep runs. FRAME_SYNC_GPIO
+ * remains available as an ~800 ns upload-start trigger for scope correlation.
  */
 #define GHOST_PROBE_MODE 1
 #define PROBE_DOT_X 8
@@ -259,44 +260,54 @@ struct SweepStep {
 };
 
 /*
- * One lap answers four questions (~3.5 min):
- *   1-9   HX-advance phase     (persistent-node model predicts null)
- *   10-12 REG2 current gain    (datasheet: 8-bit gain 12.5%..200%;
- *         0xFFFF is the 200% end. If the bar dims MUCH faster than the
- *         dot as gain drops -> output-stage charge/tail; if bar/dot
- *         ratio is constant -> leakage tracking programmed current)
- *   13-14 REG3 with bit14 CLEARED (never tried; lap one only set bits)
- *   15-16 ROW_B: OE role check, then transition guard
- */
-/*
- * DRIVE CEILING WITH REG3 0x40FC.
+ * REG3 BIT-2 x HX-ADVANCE-PHASE SWEEP.
  *
- * The production register set is now fixed; the only open question is
- * how much brightness it bought. 0.85 is verified clean at full-scale
- * content. This walks up to find the first level where
- * the two-row lower ghost returns, with a clean reference every few
- * steps so the eye stays calibrated. Whatever level fails, ship one
- * step below it.
+ * Prior hardware observations isolated REG3 bit 2:
  *
- * Watch the two rows immediately BELOW the dot, red and green
- * separately. The dot itself gets brighter each step; that is the point.
+ *   0x40F8 (bit 2 clear): upper green residual disappears, while the lower
+ *                        residual becomes slightly brighter.
+ *   0x40FC (bit 2 set):   upper green residual remains, while the lower
+ *                        residual is slightly dimmer.
+ *
+ * Bits 0, 1 and 3 did not produce a visible difference in that sweep. This
+ * test therefore changes only REG3 bit 2 and the location of the physical HX
+ * row advance inside the fixed 58-GCLK prefix. The total slot budget remains
+ * exactly 138 GCLK pulses and the complete ring remains exactly 141,820 words.
+ *
+ * At every HX phase, 0x40F8 and 0x40FC are shown back-to-back so the eye can
+ * compare upper and lower residuals directly. Every other control is fixed:
+ * REG2=0xFFFF, REG4=0x0000, drive=1.00, OE mode 3, settle=0.
+ *
+ * HX phases tested: 0, 8, 16, 24, 32, 40, 48 and 58 prefix GCLK pulses before
+ * the HX row clock. Each entry is held for 10 seconds. Watch the pixels above
+ * and below the stationary full-scale GREEN 2x2 dot at (8,5).
  */
 static const SweepStep k_sweep[] = {
-    /*  label                   REG2    REG3    REG4   hx oe drive settle */
-    {"REF clean      0.45",    0xFFFF, 0x40FC, 0x0000, 0, 3, 0.45f, 0},
-    {"drive 0.50",             0xFFFF, 0x40FC, 0x0000, 0, 3, 0.50f, 0},
-    {"drive 0.55",             0xFFFF, 0x40FC, 0x0000, 0, 3, 0.55f, 0},
-    {"drive 0.60",             0xFFFF, 0x40FC, 0x0000, 0, 3, 0.60f, 0},
-    {"REF clean      0.45",    0xFFFF, 0x40FC, 0x0000, 0, 3, 0.45f, 0},
-    {"drive 0.65",             0xFFFF, 0x40FC, 0x0000, 0, 3, 0.65f, 0},
-    {"drive 0.70",             0xFFFF, 0x40FC, 0x0000, 0, 3, 0.70f, 0},
-    {"drive 0.75",             0xFFFF, 0x40FC, 0x0000, 0, 3, 0.75f, 0},
-    {"REF clean      0.45",    0xFFFF, 0x40FC, 0x0000, 0, 3, 0.45f, 0},
-    {"drive 0.85",             0xFFFF, 0x40FC, 0x0000, 0, 3, 0.85f, 0},
-    {"drive 1.00",             0xFFFF, 0x40FC, 0x0000, 0, 3, 1.00f, 0},
-    {"drive 1.00 + settle 16", 0xFFFF, 0x40FC, 0x0000, 0, 3, 1.00f, 16},
-};
+    /* label                                  REG2    REG3    REG4   hx oe drive settle */
+    {"BIT2 CLEAR 0x40F8 | HX phase 0",  0xFFFF, 0x40F8, 0x0000,  0, 3, 1.00f, 0},
+    {"BIT2 SET   0x40FC | HX phase 0",  0xFFFF, 0x40FC, 0x0000,  0, 3, 1.00f, 0},
 
+    {"BIT2 CLEAR 0x40F8 | HX phase 8",  0xFFFF, 0x40F8, 0x0000,  8, 3, 1.00f, 0},
+    {"BIT2 SET   0x40FC | HX phase 8",  0xFFFF, 0x40FC, 0x0000,  8, 3, 1.00f, 0},
+
+    {"BIT2 CLEAR 0x40F8 | HX phase 16", 0xFFFF, 0x40F8, 0x0000, 16, 3, 1.00f, 0},
+    {"BIT2 SET   0x40FC | HX phase 16", 0xFFFF, 0x40FC, 0x0000, 16, 3, 1.00f, 0},
+
+    {"BIT2 CLEAR 0x40F8 | HX phase 24", 0xFFFF, 0x40F8, 0x0000, 24, 3, 1.00f, 0},
+    {"BIT2 SET   0x40FC | HX phase 24", 0xFFFF, 0x40FC, 0x0000, 24, 3, 1.00f, 0},
+
+    {"BIT2 CLEAR 0x40F8 | HX phase 32", 0xFFFF, 0x40F8, 0x0000, 32, 3, 1.00f, 0},
+    {"BIT2 SET   0x40FC | HX phase 32", 0xFFFF, 0x40FC, 0x0000, 32, 3, 1.00f, 0},
+
+    {"BIT2 CLEAR 0x40F8 | HX phase 40", 0xFFFF, 0x40F8, 0x0000, 40, 3, 1.00f, 0},
+    {"BIT2 SET   0x40FC | HX phase 40", 0xFFFF, 0x40FC, 0x0000, 40, 3, 1.00f, 0},
+
+    {"BIT2 CLEAR 0x40F8 | HX phase 48", 0xFFFF, 0x40F8, 0x0000, 48, 3, 1.00f, 0},
+    {"BIT2 SET   0x40FC | HX phase 48", 0xFFFF, 0x40FC, 0x0000, 48, 3, 1.00f, 0},
+
+    {"BIT2 CLEAR 0x40F8 | HX phase 58", 0xFFFF, 0x40F8, 0x0000, 58, 3, 1.00f, 0},
+    {"BIT2 SET   0x40FC | HX phase 58", 0xFFFF, 0x40FC, 0x0000, 58, 3, 1.00f, 0},
+};
 
 
 
@@ -312,27 +323,14 @@ static constexpr size_t SWEEP_COUNT = sizeof(k_sweep) / sizeof(k_sweep[0]);
 static constexpr float GAMMA_EXPONENT = 2.2f;
 
 /*
- * Maximum drive as a fraction of full scale. THIS is the ghost control,
- * not the gamma exponent: a measured brightness sweep put the ghost
- * threshold between 50% and 87% of full-scale grayscale (visible at
- * ~87%, clean at ~50%), because at high current the ICND column's
- * turn-off tail outlasts the ~3.5 us blanked window between one row's
- * last GCLK and the next row's first.
- *
- * Gamma alone does NOT protect: value 255 maps to 65535 at ANY exponent
- * (2.2 only darkens midtones), so one full-white pixel would ghost.
- * Capping max drive is what keeps every pixel inside the safe envelope.
- *
- * MEASURED on this panel: with REG3 0x40F3 the "lower ghost" (red and
- * green on the two rows scanned immediately after a lit row) appeared
- * at drive 0.60. With REG3 0x40FC it is clean at 0.85 with a moving
- * full-scale dot - the register bought roughly double the headroom, so
- * these are NOT a matched pair as an earlier revision of this comment
- * claimed. The lower ghost is a different artifact from the full-half
- * green bar the OE policy fixed: it is confined to the next ~2 slots
- * (~88 us of decay) rather than spanning the whole half.
+ * Maximum digital grayscale drive as a fraction of 65535. Gamma changes
+ * midtones but never changes endpoint 255, so this is the actual full-scale
+ * ceiling. REG3 0x40FC plus GCLK-only row OE makes both 0.85 and 1.00
+ * usable. A very faint static GREEN-only residual remains at both levels,
+ * is not stale ring content, and is unchanged by 0/4/8/16 settle pulses.
+ * This build therefore keeps drive at 1.00 and sweeps the REG3 low nibble.
  */
-static float s_max_drive = 0.85f;
+static float s_max_drive = 1.00f;
 static_assert(GAMMA_EXPONENT > 0.0f, "gamma 0 maps every level to full scale");
 
 /* -------------------------------------------------------------------------- */
@@ -751,11 +749,19 @@ static void build_ring(uint16_t *dst, const uint8_t *frame)
                 (s_row_oe_mode == 2) ? SIG_ROW_OE_N : 0;
 
             const uint16_t pre = s_hx_phase;
-            const uint16_t guard_pre = (pre < 4) ? pre : 4;
             const uint16_t tail_budget =
                 static_cast<uint16_t>(ICND_GCLK_PREFIX - pre);
+
+            /* Guard windows exist only in experimental mode 2. Keeping
+             * guard_post=4 in production mode 3 would enable four GCLK
+             * pulses before s_oe_settle and defeat a true post-advance
+             * settling test. */
+            const uint16_t guard_pre =
+                (s_row_oe_mode == 2) ? ((pre < 4) ? pre : 4) : 0;
             const uint16_t guard_post =
-                (tail_budget < 4) ? tail_budget : 4;
+                (s_row_oe_mode == 2)
+                    ? ((tail_budget < 4) ? tail_budget : 4)
+                    : 0;
 
             emit_gclk_pulses(w,
                              static_cast<uint16_t>(pre - guard_pre));
@@ -769,7 +775,9 @@ static void build_ring(uint16_t *dst, const uint8_t *frame)
             const uint16_t tail_free =
                 static_cast<uint16_t>(tail_budget - guard_post);
             const uint16_t settle =
-                (blank != 0 && s_oe_settle < tail_free) ? s_oe_settle : 0;
+                (blank != 0)
+                    ? ((s_oe_settle < tail_free) ? s_oe_settle : tail_free)
+                    : 0;
             emit_gclk_pulses(w, settle, blank);
             emit_gclk_pulses(w,
                              static_cast<uint16_t>(tail_free - settle));
@@ -1166,11 +1174,12 @@ static void transport_start()
     abort();
 }
 
-static void initialize_gamma(); /* defined below; drive lives in the table */
+/* Used by live drive/settle reconfiguration before its definition in the
+ * setup-helper section. This declaration must remain outside every test
+ * preprocessor guard. */
+static void initialize_gamma();
 
 #if GHOST_TUNE_MODE
-
-
 static void apply_sweep_step(const SweepStep &step)
 {
     xSemaphoreTake(s_present_mutex, portMAX_DELAY);
@@ -1313,16 +1322,18 @@ static void present()
 }
 
 /*
- * Change max drive live. Drive lives in the gamma table, which the ring
- * builder reads, so both rings must be rebuilt - but the transport keeps
- * running: rebuild the BACK ring, flip to it, then rebuild the other.
- * Never rewrite the ring DMA is currently reading.
+ * Change drive and post-row OE settling live. Both parameters are encoded
+ * into the waveform: drive through s_gamma16[], settle through ROW_OE_N
+ * bits on the first post-advance GCLK pulses. Rebuild only the inactive
+ * ring, flip at an upload boundary, then rebuild the other ring. Never
+ * rewrite the ring DMA is currently reading.
  */
-static void apply_drive(float drive)
+static void apply_drive_and_settle(float drive, uint16_t settle)
 {
     xSemaphoreTake(s_present_mutex, portMAX_DELAY);
 
     s_max_drive = drive;
+    s_oe_settle = settle;
     initialize_gamma();
 
     uint8_t back = back_ring();
@@ -1337,6 +1348,11 @@ static void apply_drive(float drive)
     memcpy(s_shadow[back], s_canvas, CANVAS_BYTES);
 
     xSemaphoreGive(s_present_mutex);
+}
+
+static void apply_drive(float drive)
+{
+    apply_drive_and_settle(drive, s_oe_settle);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1433,37 +1449,47 @@ static void draw_boundaries()
  */
 static void run_sparse_dot_phase()
 {
-    struct DotColour {
-        uint8_t r, g, b;
-        const char *name;
+#if OE_SETTLE_TEST_MODE
+    struct SettleStep {
+        uint16_t settle;
+        const char *label;
     };
-    /* All seven saturated combinations: cyan alone never isolates red,
-     * and red behaved differently from green/blue in every earlier lap. */
-    static const DotColour k_colours[] = {
-        {255,   0,   0, "RED"},
-        {  0, 255,   0, "GREEN"},
-        {  0,   0, 255, "BLUE"},
-        {  0, 255, 255, "CYAN"},
-        {255,   0, 255, "MAGENTA"},
-        {255, 255,   0, "YELLOW"},
-        {255, 255, 255, "WHITE"},
+
+    /* Interleave settle=0 references so eye adaptation cannot make a faint
+     * difference look larger or smaller than it is. Each phase lasts about
+     * 8 seconds at 40 Hz and traverses both panel halves repeatedly. */
+    static const SettleStep k_steps[] = {
+        { 0,  "REFERENCE settle 0" },
+        { 4,  "settle 4" },
+        { 0,  "REFERENCE settle 0" },
+        { 8,  "settle 8" },
+        { 0,  "REFERENCE settle 0" },
+        {16,  "settle 16" },
     };
-    static const float k_drives[] = {0.85f, 1.00f};
 
     int16_t px = 3, py = 5, vx = 1, vy = 1;
 
-    for (float drive : k_drives) {
-        draw_solid(0, 0, 0);
-        present();
-        apply_drive(drive);
-        ESP_LOGW(TAG, "  == dot phase at max_drive %.2f (255 -> %u) ==",
-                 static_cast<double>(drive),
-                 static_cast<unsigned>(s_gamma16[255]));
+    while (true) {
+        for (const SettleStep &cfg : k_steps) {
+            draw_solid(0, 0, 0);
+            present();
+            apply_drive_and_settle(1.00f, cfg.settle);
 
-        for (const DotColour &c : k_colours) {
-            ESP_LOGI(TAG, "     dot: %s", c.name);
+            const uint16_t visible_gclk =
+                static_cast<uint16_t>(ICND_GCLK_PER_SCAN_SLOT - cfg.settle);
+            const float visible_fraction =
+                static_cast<float>(visible_gclk) /
+                static_cast<float>(ICND_GCLK_PER_SCAN_SLOT);
 
-            for (uint16_t step = 0; step < 160; step++) {
+            ESP_LOGW(TAG,
+                     "==== GREEN OE-SETTLE: %s | drive=1.00 settle=%u "
+                     "visible=%u/%u GCLK (%.1f%%) ====",
+                     cfg.label, static_cast<unsigned>(cfg.settle),
+                     static_cast<unsigned>(visible_gclk),
+                     static_cast<unsigned>(ICND_GCLK_PER_SCAN_SLOT),
+                     static_cast<double>(visible_fraction * 100.0f));
+
+            for (uint16_t step = 0; step < 320; step++) {
                 canvas_set_pixel(px, py, 0, 0, 0);
                 canvas_set_pixel(px + 1, py, 0, 0, 0);
                 canvas_set_pixel(px, py + 1, 0, 0, 0);
@@ -1474,19 +1500,58 @@ static void run_sparse_dot_phase()
                 if (px <= 0 || px >= PANEL_WIDTH - 2) vx = -vx;
                 if (py <= 0 || py >= PANEL_HEIGHT - 2) vy = -vy;
 
-                canvas_set_pixel(px, py, c.r, c.g, c.b);
-                canvas_set_pixel(px + 1, py, c.r, c.g, c.b);
-                canvas_set_pixel(px, py + 1, c.r, c.g, c.b);
-                canvas_set_pixel(px + 1, py + 1, c.r, c.g, c.b);
+                canvas_set_pixel(px, py, 0, TEST_LEVEL, 0);
+                canvas_set_pixel(px + 1, py, 0, TEST_LEVEL, 0);
+                canvas_set_pixel(px, py + 1, 0, TEST_LEVEL, 0);
+                canvas_set_pixel(px + 1, py + 1, 0, TEST_LEVEL, 0);
 
                 present();
                 vTaskDelay(pdMS_TO_TICKS(25));
             }
         }
     }
+#else
+    /* Normal sparse-update acceptance test. */
+    struct DotColour {
+        uint8_t r, g, b;
+        const char *name;
+    };
+    static const DotColour k_colours[] = {
+        {255,   0,   0, "RED"},
+        {  0, 255,   0, "GREEN"},
+        {  0,   0, 255, "BLUE"},
+        {  0, 255, 255, "CYAN"},
+        {255,   0, 255, "MAGENTA"},
+        {255, 255,   0, "YELLOW"},
+        {255, 255, 255, "WHITE"},
+    };
 
-    /* Leave the panel at the configured production drive. */
-    apply_drive(0.85f);
+    int16_t px = 3, py = 5, vx = 1, vy = 1;
+    apply_drive_and_settle(1.00f, 0);
+
+    for (const DotColour &c : k_colours) {
+        ESP_LOGI(TAG, "     dot: %s", c.name);
+        for (uint16_t step = 0; step < 160; step++) {
+            canvas_set_pixel(px, py, 0, 0, 0);
+            canvas_set_pixel(px + 1, py, 0, 0, 0);
+            canvas_set_pixel(px, py + 1, 0, 0, 0);
+            canvas_set_pixel(px + 1, py + 1, 0, 0, 0);
+
+            px += vx;
+            py += vy;
+            if (px <= 0 || px >= PANEL_WIDTH - 2) vx = -vx;
+            if (py <= 0 || py >= PANEL_HEIGHT - 2) vy = -vy;
+
+            canvas_set_pixel(px, py, c.r, c.g, c.b);
+            canvas_set_pixel(px + 1, py, c.r, c.g, c.b);
+            canvas_set_pixel(px, py + 1, c.r, c.g, c.b);
+            canvas_set_pixel(px + 1, py + 1, c.r, c.g, c.b);
+
+            present();
+            vTaskDelay(pdMS_TO_TICKS(25));
+        }
+    }
+#endif
 }
 
 #endif /* !GHOST_TUNE_MODE */
@@ -1496,56 +1561,43 @@ static void pattern_task(void *)
 {
     vTaskDelay(pdMS_TO_TICKS(200));
 
-    static const struct {
-        uint8_t r, g, b;
-        const char *name;
-    } k_dot_colors[] = {
-        {TEST_LEVEL, 0, 0, "RED"},
-        {0, TEST_LEVEL, 0, "GREEN"},
-        {0, 0, TEST_LEVEL, "BLUE"},
-        {0, TEST_LEVEL, TEST_LEVEL, "CYAN"},
-    };
+    ESP_LOGW(TAG,
+             "Focused test: static GREEN 2x2 dot at (8,5), drive 1.00, "
+             "REG3 0x40F8/0x40FC x HX phase 0..58");
 
     draw_solid(0, 0, 0);
     present();
 
 #if GHOST_PROBE_MODE
     /*
-     * DRIVE-THRESHOLD HARNESS.
+     * REG3 BIT-2 x HX-PHASE HARNESS.
      *
-     * A static FULL-SCALE (255) 2x2 dot, held while the sweep walks
-     * drive, settling blank, and current gain. Watch only one thing:
-     * does the full-half vertical bar appear at the dot's column?
-     *
-     *   A: the first drive level that ghosts is the panel's ceiling.
-     *   B: if a settle value clears the ghost at drive 1.00, the tail-
-     *      vs-blank-window model is right and settle buys headroom.
-     *   C: if lower gain clears it instead, the ghost tracks current
-     *      magnitude and REG2 is the better global brightness axis.
-     *   REF: the original always-enabled policy, for calibration.
-     *
-     * Only 4 pixels are lit, so full drive here is thermally harmless;
-     * do NOT run a full-screen white at drive 1.00 without checking
-     * supply current first.
+     * The canvas stays constant: one stationary full-scale GREEN 2x2 dot at
+     * (8,5). Every step performs a complete ICND/HX protocol reset and
+     * rebuilds both waveform rings. At each HX phase, the test compares
+     * 0x40F8 (bit 2 clear) directly against 0x40FC (bit 2 set).
+     * Each observation window is 10 seconds.
      */
-    canvas_set_pixel(PROBE_DOT_X, PROBE_DOT_Y, 255, 255, 255);
-    canvas_set_pixel(PROBE_DOT_X + 1, PROBE_DOT_Y, 255, 255, 255);
-    canvas_set_pixel(PROBE_DOT_X, PROBE_DOT_Y + 1, 255, 255, 255);
-    canvas_set_pixel(PROBE_DOT_X + 1, PROBE_DOT_Y + 1, 255, 255, 255);
+    canvas_set_pixel(PROBE_DOT_X, PROBE_DOT_Y, 0, 255, 0);
+    canvas_set_pixel(PROBE_DOT_X + 1, PROBE_DOT_Y, 0, 255, 0);
+    canvas_set_pixel(PROBE_DOT_X, PROBE_DOT_Y + 1, 0, 255, 0);
+    canvas_set_pixel(PROBE_DOT_X + 1, PROBE_DOT_Y + 1, 0, 255, 0);
 
     while (true) {
         for (size_t i = 0; i < SWEEP_COUNT; i++) {
             apply_sweep_step(k_sweep[i]);
             present();
             ESP_LOGW(TAG,
-                     "==== %u/%u: %s (drive=%.2f REG2=0x%04X "
-                     "REG3=0x%04X REG4=0x%04X) -> 255 maps to %u ====",
+                     "==== REG3 BIT2/HX %u/%u: %s | REG3=0x%04X "
+                     "hx=%u/58 drive=%.2f OE=%u settle=%u, hold 10 s ====",
                      static_cast<unsigned>(i + 1),
                      static_cast<unsigned>(SWEEP_COUNT), k_sweep[i].label,
+                     k_sweep[i].reg3,
+                     static_cast<unsigned>(k_sweep[i].hx_phase),
                      static_cast<double>(k_sweep[i].drive),
-                     k_sweep[i].reg2, k_sweep[i].reg3, k_sweep[i].reg4,
-                     static_cast<unsigned>(s_gamma16[255]));
-            vTaskDelay(pdMS_TO_TICKS(12000));
+                     static_cast<unsigned>(k_sweep[i].b_mode),
+                     static_cast<unsigned>(k_sweep[i].settle));
+            vTaskDelay(pdMS_TO_TICKS(10000));
         }
     }
 #else
@@ -1600,6 +1652,12 @@ static void pattern_task(void *)
      * deterministic before the first visible frame. */
     vTaskDelay(pdMS_TO_TICKS(200));
 
+#if OE_SETTLE_TEST_MODE
+    ESP_LOGW(TAG,
+             "Focused test: GREEN 2x2 bouncing dot, drive 1.00, "
+             "OE settle 0/4/8/16 with interleaved references");
+    run_sparse_dot_phase(); /* loops forever */
+#else
     while (true) {
         ESP_LOGI(TAG, "Pattern: RED");
         draw_solid(TEST_LEVEL, 0, 0);
@@ -1639,6 +1697,7 @@ static void pattern_task(void *)
         ESP_LOGI(TAG, "Pattern: sparse bouncing dot (partial updates)");
         run_sparse_dot_phase();
     }
+#endif /* OE_SETTLE_TEST_MODE */
 }
 #endif /* GHOST_TUNE_MODE */
 
@@ -1662,7 +1721,7 @@ static void telemetry_task(void *)
 
         ESP_LOGI(TAG,
                  "uploads/s=%.2f (expect ~70.5 @10MHz), flips=%u, "
-                 "front=ring%u, REG2=0x%04X, REG3=0x%04X, drive=%.2f, OE=%u, "
+                 "front=ring%u, REG2=0x%04X, REG3=0x%04X, drive=%.2f, OE=%u, settle=%u, "
                  "internal free=%u | last present: px=%u lines=%u "
                  "sync=%uB work=%uus",
                  static_cast<float>(eof - last_eof) / secs,
@@ -1672,6 +1731,7 @@ static void telemetry_task(void *)
                  s_icnd_cfg.reg3,
                  static_cast<double>(s_max_drive),
                  static_cast<unsigned>(s_row_oe_mode),
+                 static_cast<unsigned>(s_oe_settle),
                  static_cast<unsigned>(heap_caps_get_free_size(
                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
                  static_cast<unsigned>(s_present_px),
